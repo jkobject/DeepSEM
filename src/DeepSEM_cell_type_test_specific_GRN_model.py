@@ -22,18 +22,23 @@ class celltype_GRN_model:
         try:
             os.mkdir(opt.save_name)
         except:
-            print('save dir exist')
+            print("save dir exist")
 
     def initalize_A(self, data):
         num_genes = data.shape[1]
-        A = np.ones([num_genes, num_genes]) / (num_genes - 1) + (np.random.rand(num_genes * num_genes) * 0.0002).reshape(
-            [num_genes, num_genes])
+        A = np.ones([num_genes, num_genes]) / (num_genes - 1) + (
+            np.random.rand(num_genes * num_genes) * 0.0002
+        ).reshape([num_genes, num_genes])
         for i in range(len(A)):
             A[i, i] = 0
         return A
 
-    def init_data(self, ):
-        data = sc.read(self.opt.data_file)
+    def init_data(
+        self,
+    ):
+        data = sc.read_h5ad(self.opt.data_file)
+        if not isinstance(data.X, np.ndarray):
+            data.X = data.X.toarray()
         gene_name = list(data.var_names)
         data_values = data.X
         Dropout_Mask = (data_values != 0).astype(float)
@@ -55,9 +60,14 @@ class celltype_GRN_model:
         data = pd.DataFrame(data_values, index=list(data.obs_names), columns=gene_name)
         num_genes, num_nodes = data.shape[1], data.shape[0]
         feat_train = torch.FloatTensor(data.values)
-        train_data = TensorDataset(feat_train, torch.LongTensor(list(range(len(feat_train)))),
-                                   torch.FloatTensor(Dropout_Mask))
-        dataloader = DataLoader(train_data, batch_size=self.opt.batch_size, shuffle=True, num_workers=1)
+        train_data = TensorDataset(
+            feat_train,
+            torch.LongTensor(list(range(len(feat_train)))),
+            torch.FloatTensor(Dropout_Mask),
+        )
+        dataloader = DataLoader(
+            train_data, batch_size=self.opt.batch_size, shuffle=True, num_workers=1
+        )
         return dataloader, num_nodes, num_genes, data, gene_name
 
     def train_model(self):
@@ -67,10 +77,19 @@ class celltype_GRN_model:
         Tensor = torch.cuda.FloatTensor
         optimizer = optim.RMSprop(vae.parameters(), lr=self.opt.lr)
         optimizer2 = optim.RMSprop([vae.adj_A], lr=self.opt.lr * 0.2)
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=self.opt.lr_step_size, gamma=self.opt.gamma)
+        scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer, step_size=self.opt.lr_step_size, gamma=self.opt.gamma
+        )
         vae.train()
         for epoch in range(self.opt.n_epochs):
-            loss_all, mse_rec, loss_kl, data_ids, loss_tfs, loss_sparse = [], [], [], [], [], []
+            loss_all, mse_rec, loss_kl, data_ids, loss_tfs, loss_sparse = (
+                [],
+                [],
+                [],
+                [],
+                [],
+                [],
+            )
             if epoch % (self.opt.K1 + self.opt.K2) < self.opt.K1:
                 vae.adj_A.requires_grad = False
             else:
@@ -80,9 +99,13 @@ class celltype_GRN_model:
                 inputs, data_id, dropout_mask = data_batch
                 inputs = Variable(inputs.type(Tensor))
                 data_ids.append(data_id.cpu().detach().numpy())
-                temperature = max(0.95 ** epoch, 0.5)
-                loss, loss_rec, loss_gauss, loss_cat, dec, y, hidden = vae(inputs, dropout_mask=dropout_mask.cuda(),
-                                                                           temperature=temperature, opt=self.opt)
+                temperature = max(0.95**epoch, 0.5)
+                loss, loss_rec, loss_gauss, loss_cat, dec, y, hidden = vae(
+                    inputs,
+                    dropout_mask=dropout_mask.cuda(),
+                    temperature=temperature,
+                    opt=self.opt,
+                )
                 sparse_loss = self.opt.alpha * torch.mean(torch.abs(vae.adj_A))
                 loss = loss + sparse_loss
                 loss = loss
@@ -97,8 +120,15 @@ class celltype_GRN_model:
                     optimizer2.step()
             scheduler.step()
             if epoch % (self.opt.K1 + self.opt.K2) >= self.opt.K1:
-                print('epoch:', epoch,
-                      np.mean(loss_all), 'mse_loss:', np.mean(mse_rec), 'kl_loss:', np.mean(loss_kl), 'sparse_loss:',
-                      np.mean(loss_sparse))
-        extractEdgesFromMatrix(vae.adj_A.cpu().detach().numpy(), gene_name, TFmask=None).to_csv(
-            self.opt.save_name + '/GRN_inference_result.tsv', sep='\t', index=False)
+                print(
+                    "epoch:",
+                    epoch,
+                    np.mean(loss_all),
+                    "mse_loss:",
+                    np.mean(mse_rec),
+                    "kl_loss:",
+                    np.mean(loss_kl),
+                    "sparse_loss:",
+                    np.mean(loss_sparse),
+                )
+        return vae.adj_A.cpu().detach().numpy()
